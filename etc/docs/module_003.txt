@@ -1,0 +1,79 @@
+1
+Open an Endpoint to CORS
+
+To open the /resolutions endpoint to CORS requests, add the @CrossOrigin annotation to the ResolutionController#read() method:
+
+import org.springframework.web.bind.annotation.CrossOrigin;
+
+@CrossOrigin //(maxAge = 0) if locally verifying
+@PreAuthorize("hasAuthority('resolution:read')")
+@PostFilter("@post.filter(#root)")
+@RequestMapping("/resolutions")
+public Iterable<Resolution> read() {
+    // ...
+}
+(The reason to specify a maxAge of 0 is so that the browser doesn't cache any CORS preflight responses while you are making changes throughout the module.)
+
+What the @CrossOrigin annotation does is alert Spring MVC to manage the CORS handshake. However, because Spring Security requires authentication on all endpoints, we also need to add some configuration to Spring Security, which we'll see in the next task.
+
+Extra Credit
+It's not very common for HTTP Basic and CORS to go together, as you'll see by the end of this module. Note; however, that these configurations will come in handy as we change over to JWT, a more modern authentication mechanism.
+
+Check out the final task in this module for details on why securing an application that uses both HTTP Basic and CORS can be challenging.
+
+2
+Configure Spring Security to Allow the CORS Handshake
+
+To configure Spring Security to allow CORS handshakes, call the cors() method in the Spring Security DSL, declared in ResolutionsApplication:
+
+// ...
+
+protected void configure(HttpSecurity http) {
+    http
+        .authorizeRequests(...)
+        .httpBasic(basic -> {})
+        .cors(cors -> {});
+}
+3
+Restricting CORS Origins, Methods, and Headers Globally
+
+In each @CrossOrigin annotation, we can specify which origins, methods, and headers we'll allow, but this can be tedious in a large application.
+
+Instead, in this task, you'll add these restrictions globally in a filter-based fashion.
+
+In ResolutionsApplication, add a WebMvcConfigurer() @Bean and override the addCorsMapping() method:
+
+@Bean
+WebMvcConfigurer webMvcConfigurer() {
+    return new WebMvcConfigurer() {
+        @Override
+        public void addCorsMappings(CorsRegistry registry) {
+            registry.addMapping("/**")
+                // .maxAge(0) // if using local verification
+                .allowedOrigins("http://localhost:4000")
+                .allowedMethods("HEAD")
+                .allowedHeaders("Authorization");
+        }
+    };
+}
+Now, CORS requests will only work from http://localhost:4000. Also, only HEAD requests will be allowed by default.
+
+Extra Credit
+The @CrossOrigin annotation augments the global configuration. So, even though globally you are saying only HEAD is allowed, the @CrossOrigin annotation on ResolutionController#read will effectively whitelist GET just for /resolutions
+
+4
+Allowing Basic Credentials
+
+If you've tried the sample client application, you may have noticed that things still aren't working, and that's by design to make sure that this point about security isn't missed.
+
+The final step to get CORS working with an HTTP Basic REST API is to allow Basic credentials over the CORS handshake.
+
+Do this, by editing the @CrossOrigin annotation in ResolutionController#read():
+
+@CrossOrigin(allowCredentials = "true")
+Now, the server will accept Basic credentials that are handed over by the browser.
+
+WARNING: This is a powerful header, and it should only be used when there is a very high degree of trust between the two applications. Misuse of when the credentials are passed on can lead to CSRF and other vulnerabilities. The app we've got so far is safe since we're only allowing credentials on GET /resolutions, and because the client app is declaratively passing the credentials, instead of implicitly, like with cookies.
+
+In the remaining modules, we'll learn about a different authentication mechanism that can better address this.
+Run Now's a good time to run things locally and see the REST API in action
