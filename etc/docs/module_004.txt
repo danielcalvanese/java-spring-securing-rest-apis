@@ -1,0 +1,401 @@
+1
+Specify the Location of the Authorization Server
+
+To activate Spring Security's support for JWT-based Bearer Token Authentication, you need to add the appropriate dependencies and specify the location of the authorization server.
+
+The first has already been done for you, so now, open up the src > main > resources > application.yml file and add the location to the authorization server:
+
+spring:
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: http://localhost:9999/auth/realms/one
+Now, since we are already overriding WebSecurityConfigurerAdapter, you've got one more step to switch it on -- you'll do this in the next task.
+
+Extra Credit
+Where did that URL come from? The value can really be whatever, and just needs to be the published issuer for your authorization server. It's usually listed in its documentation. The URL you used above is the issuer for a Keycloak authorization server, pointing at a realm named "one".
+
+Included in the project is a docker-compose setup for Keycloak which creates a realm called one at startup. So, while you could point this at any authorization server, this specific URL simplifies local verification.
+
+2
+Add JWT Authentication as an Allowed Authentication Mechanism
+
+In this task, you'll configure your WebSecurityConfigurerAdapter to allow JWT-based Bearer Token Authentication.
+
+In ResolutionsApplication, add oauth2ResourceServer to the DSL configuration, specifying its jwt configuration value:
+
+@Override
+protected void configure(HttpSecurity http) {
+    http
+        .authorizeRequests(...)
+        .httpBasic(basic -> {})
+        .oauth2ResourceServer(oauth2 -> oauth2.jwt())
+        .cors(cors -> {});
+}
+Extra Credit
+Security with Spring is naturally declarative, and so WebSecurityConfigurerAdapter requires you to specify a whitelist of allowed authentication mechanisms.
+
+The reason that simple Spring Boot applications can get away without this step is that Spring Boot creates its own instance of WebSecurityConfigurerAdapter for you if you haven't yourself.
+
+3
+Configure the Authority Prefix
+
+By default, Spring Security will extract each bearer token scope into its own GrantedAuthority, prefixing it with SCOPE_ along the way.
+
+Remember, though, that your existing app uses no prefix:
+
+@PreAuthorize("hasAuthority('resolution:read')")
+In this task, you'll configure your project to maintain this approach, where no prefixes are used, overriding the default behavior.
+
+To do this, in ResolutionsApplication, add a JwtAuthenticationConverter as a @Bean. Its job will be to tell Spring Security to not add any prefix to the scopes that it finds:
+
+@Bean
+JwtAuthenticationConverter jwtAuthenticationConverter() {
+    JwtAuthenticationConverter authenticationConverter = new JwtAuthenticationConverter();
+    JwtGrantedAuthoritiesConverter authoritiesConverter = new JwtGrantedAuthoritiesConverter();
+    authoritiesConverter.setAuthorityPrefix("");
+    authenticationConverter.setJwtGrantedAuthoritiesConverter(authoritiesConverter);
+    return authenticationConverter;
+}
+Now, JWTs that have the same scopes as our users' authorities will work for the same requests.
+
+Run Now's a good time to run things locally and see the REST API in action
+
+Extra Credit
+We could have made our @PreAuthorize expressions more complex:
+
+@PreAuthorize("hasAnyAuthority('resolution:read', 'SCOPE_resolution:read')")
+instead of adding the JwtAuthenticationConverter. While more complex, the nice thing about this approach is that methods and filters can know where a given authority came from - for example: Was it an authority from the database or from the JWT? In many applications, this distinction doesn't matter post-authentication, as we'll see towards the end of this module.
+
+4
+Add Personal Information to User
+
+Adding PII (Personally Identifiable Information) to an application can be tricky; over the next few tasks, you'll see how Spring Security can help with keeping that data private.
+
+In preparation for that, in this task, you'll add the user's full name to the User object, and will change ResolutionController#read() to include their name as part of the results.
+
+First, add the fullName field to User, calling the column full_name (really, the names don't matter, but this simplifies the automated tests):
+
+@Entity("users")
+public class User implements Serializable {
+    // ...
+
+    @Column(name="full_name")
+    String fullName;
+
+    // add the getter and setter
+}
+Then, update User's copy constructor:
+
+public User(User user) {
+    // ...
+    this.fullName = user.fullName;
+    // ...
+}
+Next, give each of your users in ResolutionInitializer a full name:
+
+User user = new User(...);
+user.setFullName("User Userson");
+user.grantAuthority(...);
+
+// ... 
+hasRead.setFullName("Has Read");
+// ...
+hasWrite.setFullName("Has Write");
+// ...
+admin.setFullName("Admin Adminson");
+// ...
+Note that for simplicity in working with the integrated test environment, make sure that the users' personal names are as listed above. Of course, in the real-world, this has nothing to do with securing an app.
+
+Now with the data in place, change ResolutionController to depend on UserRepository:
+
+public class ResolutionController {
+    // ...
+    
+    private final UserRepository users;
+
+    public ResolutionController(ResolutionRepository resolutions, UserRepository users) {
+        this.resolutions = resolutions;
+        this.users = users;
+    }
+
+    // ...
+}
+Now, with the data ready, change ResolutionController#read() to include the user's personal name as part of the resolution text:
+
+public Iterable<Resolution> read() {
+    Iterable<Resolution> resolutions = this.resolutions.findAll();
+    for (Resolution resolution : resolutions) {
+        String fullName = this.users.findByUsername(resolution.getOwner())
+                .map(User::getFullName).orElse("Anonymous");
+        resolution.setText(resolution.getText() + ", by " + fullName);
+    }
+    return resolutions;
+}
+Extra Credit
+The problem we've got here is that we're including PII in our response, and having the resolution:read authority probably isn't a strong enough indication that something untrusted like an OAuth 2.0 client should be allowed to view that info. We'll need something finer-grained than method-based security in this case.
+
+5
+Look up Authorities Programmatically
+
+In this task, you'll solve this problem by looking up the authorities programmatically.
+
+In ResolutionController#read(), get the current authentication using SecurityContextHolder:
+
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.context.SecurityContext;
+
+// ...
+public Iterable<Resolution> read() {
+    Iterable<Resolution> resolutions = this.resolutions.findAll();
+    Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+    for (Resolution resolution : resolutions) {
+        // ...
+    }
+    return resolutions;
+}
+Next, ask if the authentication's list of authorities contains user:read:
+
+// ...
+Iterable<Resolution> resolutions = this.resolutions.findAll();
+Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+if (authentication.getAuthorities().contains(new SimpleGrantedAuthority("user:read"))) {
+    for (Resolution resolution : resolutions) {
+        // ...
+    }
+}
+return resolutions;
+// ...
+Now, only authentications with the user:read authority will see the user's PII.
+
+Extra Credit
+If you are following closely, you are probably wondering if it would work to use @CurrentSecurityContext, and yes, it would. This shows you another way to get the currently logged in user, though.
+
+In a real application, this comes in handy in non-controller layers when you need to get the current user and can use method-injection to get it passed in to you.
+
+6
+Tie a Bearer Token to an End User
+
+In this task, you'll create your own JWT-to-Authentication converter that will query your UserRepository to augment the final authentication statement.
+
+First, open up the UserRepositoryJwtAuthenticationConverter stub.
+
+Next, change it to implement Converter<Jwt, AbstractAuthenticationToken>, and add it to the application context with the @Component annotation:
+
+import org.springframework.core.convert.converter.Converter;
+import org.springframework.security.authentication.AbstractAuthenticationToken;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.stereotype.Component;
+
+@Component
+public class UserRepositoryJwtAuthenticationConverter 
+        implements Converter<Jwt, AbstractAuthenticationToken> {
+    // ...
+}
+Now, change it to depend on UserRepository. Also, have it use the same JwtGrantedAuthoritiesConverter that you used on an earlier step:
+
+public class UserRepositoryJwtAuthenticationConverter 
+        implements Converter<Jwt, AbstractAuthenticationToken> {
+    private final UserRepository users;
+    private final JwtGrantedAuthoritiesConverter authoritiesConverter = new JwtGrantedAuthoritiesConverter();
+
+    public UserRepositoryJwtAuthenticationConverter(UserRepository users) {
+        this.users = users;
+        this.authoritiesConverter.setAuthorityPrefix("");
+    }
+}
+Then, implement the convert() method to look up the user using the JWT's sub claim. The result will be a JwtAuthenticationToken that contains the authorities extracted from the JWT:
+
+import java.util.Collection;
+
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
+
+public class UserRepositoryJwtAuthenticationConverter 
+        implements Converter<Jwt, AbstractAuthenticationToken> {
+    // ...
+
+
+    @Override
+    public AbstractAuthenticationToken convert(Jwt jwt) {
+        String username = jwt.getSubject();
+        User user = this.users.findByUsername(username)
+             .orElseThrow(() -> new UsernameNotFoundException("no user"));
+        Collection<GrantedAuthority> authorities = this.authoritiesConverter.convert(jwt);
+        return new JwtAuthenticationToken(jwt, authorities);
+    }
+}
+Having done that, now replace the JwtAuthenticationConverter in ResolutionsApplication. Do this by, first, using @Autowired, and by setting the converter directly within the DSL:
+
+import org.springframework.beans.factory.annotation.Autowired;
+
+// ...
+public class ResolutionsApplication extends WebSecurityConfigurerAdapter {
+    @Autowired
+    UserRepositoryJwtAuthenticationConverter authenticationConverter;
+
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+        http
+            .authorizeRequests(...)
+            .httpBasic(basic -> {})
+            .oauth2ResourceServer(oauth2 -> oauth2
+                .jwt().jwtAuthenticationConverter(this.authenticationConverter)
+            )
+            .cors(cors -> {});
+    }
+}
+And second, removing your old JwtAuthenticationConverter @Bean definition, also in ResolutionsApplication:
+
+// remove this definition
+@Bean
+JwtAuthenticationConverter jwtAuthenticationConverter() {
+// ...
+Extra Credit
+UserDetailsService and JwtAuthenticationConverter are similar, but they have an important difference that changes the way that we use each.
+
+JwtAuthenticationConverter doesn't have a dedicated interface - you'll notice that JwtAuthenticationConverter is a concrete class. This means that if we want to create our own implementation, we are actually implementing Converter<Jwt, AbstractAuthenticationToken>. As of the latest Spring Security, this means that it won't pick up the bean automatically, and for this reason, we need to place it on the DSL directly.
+
+7
+Customize the User Principal
+
+In this task, you'll do a step very similar to the one you did in Module 1 when merging the UserDetails with the User. This time, you'll merge it with OAuth2AuthenticatedPrincipal.
+
+So, in UserRepositoryJwtAuthenticationConverter, add a private inner class called UserOAuth2AuthenticatedPrincipal. It should extend User and implement OAuth2AuthenticatedPrincipal:
+
+import org.springframework.security.oauth2.core.OAuth2AuthenticatedPrincipal;
+
+public class UserRepositoryJwtAuthenticationConverter
+        implements Converter<Jwt, AbstractAuthenticationToken> {
+
+    public AbstractAuthenticationToken convert(Jwt jwt) {
+        // ...
+    }
+ 
+    private static class UserOAuth2AuthenticatedPrincipal extends User
+            implements OAuth2AuthenticatedPrincipal {
+        // ...
+    }
+}
+Make the constructor take a User, but also have it take a Map of attributes and a Collection of authorities:
+
+private static class UserOAuth2AuthenticatedPrincipal extends User
+        implements OAuth2AuthenticatedPrincipal {
+
+    private final Map<String, Object> attributes;
+    private final Collection<GrantedAuthority> authorities;
+
+    public UserOAuth2AuthenticatedPrincipal(User user, Map<String, Object> attributes, Collection<GrantedAuthority> authorities) {
+        super(user);
+        this.attributes = attributes;
+        this.authorities = authorities;
+    }
+
+    @Override
+    public Map<String, Object> getAttributes() {
+        return this.attributes;
+    }
+
+    @Override
+    public Collection<GrantedAuthority> getAuthorities() {
+        return this.authorities;
+    }
+
+    @Override
+    public String getName() {
+        return this.username;
+    }
+}
+Next, change your implementation of convert to call this constructor:
+
+public AbstractAuthenticationToken convert(Jwt jwt) {
+    String username = jwt.getSubject();
+    User user = this.users.findByUsername(username)
+        .orElse(...);
+    Collection<GrantedAuthority> authorities = ...;
+    OAuth2AuthenticationPrincipal principal = new UserOAuth2AuthenticatedPrincipal(user, jwt.getClaims(), authorities);
+    return new JwtAuthenticationToken(jwt, authorities);
+}
+Next, create an OAuth2AccessToken credentials instance:
+
+import org.springframework.security.oauth2.core.OAuth2AccessToken;
+import static org.springframework.security.oauth2.core.OAuth2AccessToken.TokenType.BEARER;
+
+public AbstractAuthenticationToken convert(Jwt jwt) {
+    String username = jwt.getSubject();
+    User user = this.users.findByUsername(username)
+        .orElse(...);
+    Collection<GrantedAuthority> authorities = ...;
+    OAuth2AuthenticationPrincipal principal = new UserOAuth2AuthenticatedPrincipal(user, jwt.getClaims(), authorities);
+    OAuth2AccessToken credentials = new OAuth2AccessToken(BEARER, jwt.getTokenValue(), null, null);
+    return new JwtAuthenticationToken(jwt, authorities);
+}
+And lastly for this class, replace returning JwtAuthenticationToken with BearerTokenAuthentication:
+
+import org.springframework.security.oauth2.server.resource.authentication.BearerTokenAuthentication;
+
+
+public AbstractAuthenticationToken convert(Jwt jwt) {
+    String username = jwt.getSubject();
+    User user = this.users.findByUsername(username)
+        .orElse(...);
+    Collection<GrantedAuthority> authorities = ...;
+    OAuth2AuthenticationPrincipal principal = new UserOAuth2AuthenticatedPrincipal(user, jwt.getClaims(), authorities);
+    OAuth2AccessToken credentials = new OAuth2AccessToken(BEARER, jwt.getTokenValue(), null, null);
+
+    return new BearerTokenAuthentication(principal, credentials, authorities);
+}
+Extra Credit
+Phew! That's a lot of boilerplate.
+
+Remember that the support for resource servers in Spring Security is relatively new - this is an area where things may be simplified in the future.
+
+8
+Merge User Authorities and Scopes
+
+In this task, you'll reconcile the users' authorities in the database with the scopes the user granted to the client in the JWT.
+
+In UserRepositoryJwtAuthenticationConverter, now also retrieve the authorities from the end user:
+
+@Override
+public AbstractAuthenticationToken convert(Jwt jwt) {
+    String username = jwt.getSubject();
+    User user = this.users.findByUsername(username)
+            .orElseThrow(() -> new UsernameNotFoundException("no user"));
+    Collection<GrantedAuthority> authorities = this.grantedAuthoritiesConverter.convert(jwt);
+    Collection<GrantedAuthority> userAuthorities = user.getUserAuthorities().stream()
+            .map(authority -> new SimpleGrantedAuthority(authority.getAuthority()))
+            .collect(Collectors.toList());
+    // ...   
+    return new BearerTokenAuthentication(principal, credentials, authorities);
+}
+Then, merge the two using Collection#retainAll(), which performs an intersection:
+
+@Override
+public AbstractAuthenticationToken convert(Jwt jwt) {
+    // ...
+    Collection<GrantedAuthority> authorities = this.grantedAuthoritiesConverter.convert(jwt);
+    Collection<GrantedAuthority> userAuthorities = user.getUserAuthorities().stream()
+            .map(authority -> new SimpleGrantedAuthority(authority.getAuthority()))
+            .collect(Collectors.toList());
+    authorities.retainAll(userAuthorities);
+    // ...   
+}
+Now, because we are doing an intersection, let's make sure to grant the user:read authority to the relevant users in ResolutionIntializer:
+
+User user = new User(...);
+// ...
+user.grantAuthority("resolution:read");
+user.grantAuthority("user:read")
+// ...
+
+// and so on for other users
+Run Now's a good time to run things locally and see the REST API in action
+
+Extra Credit
+Obviously, there are as many ways to perform this reconciliation as there are applications.
+
+The important point to remember is that sometimes applications have their own internal representation of authority. And, just because a client has been granted an authority, it doesn't mean the underlying user can actually do that. The final list of authorities ought to represent some kind of intersection of what the user is allowed to do and what the user has granted the client to be able to do on their behalf.
