@@ -1,0 +1,558 @@
+Activate Spring Boot's Auto-configuration
+
+In this step, you'll apply the Spring Boot Security Starter's auto-configuration to the project. In src > main > java > io.jzheaux.springsecurity.resolutions > ResolutionsApplication.java, there's a @SpringBootApplication annotation with security disabled:
+
+@SpringBootApplication(exclude=SpringBootApplication.class)
+Go ahead and remove the exclusion so that it looks like:
+
+@SpringBootApplication
+Extra Credit
+Actually, to activate security, all you normally need to do is add the spring-boot-starter-security dependency in your pom.xml like so:
+
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-security</artifactId>
+</dependency>
+However, for the purposes of this demo, the dependency is already included.
+
+Adding the spring-boot-starter-security dependency does a few things for you by default:
+
+It requires authorization for every endpoint - whether Boot-generated or you-generated - via HTTP Basic or Form Login.
+It protects every endpoint from common web application security vulnerabilities like XSS, CSRF, and clickjacking.
+It creates a default user with a random password, for initial testing.
+It creates a PasswordEncoder that uses BCrypt for hashing the password.
+2
+Replace Defaults With an In-memory User Datasource
+
+Now, let's change out the default user for one under our control.
+
+To do this, in src > main > java > io.jzheaux.springsecurity.resolutions > ResolutionsApplication.java, override the Spring Security default UserDetailsService with your own instance (note that all classes in the project are in the same package):
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.provisioning.InMemoryUserDetailsManager;
+
+//...
+
+@Bean
+public UserDetailsService userDetailsService() {
+    return new InMemoryUserDetailsManager(
+        org.springframework.security.core.userdetails.User
+            .withUsername("user")
+            .password("{bcrypt}$2a$10$MywQEqdZFNIYnx.Ro/VQ0ulanQAl34B5xVjK2I/SDZNVGS5tHQ08W")
+            .authorities("resolution:read")
+            .build());
+}
+Run Now's a good time to run things locally and see the REST API in action
+
+Extra Credit
+To encode a password, Spring Boot ships with a CLI where you can do:
+
+./spring encodepassword password
+for Linux or Mac. Or:
+
+spring.bat encodepassword password
+for Windows.
+
+If you use this, remember when you copy-paste it into ResolutionsApplication to leave the {bcrypt} prefix.
+
+3
+Represent the User with JPA
+
+In this task, you'll create a JPA-managed User entity to represent users.
+
+First, open up the User class, which has already been started for you.
+
+Then, add an @Entity annotation that configures the table name to be users, since that's the Spring Security default:
+
+import javax.persistence.Entity;
+
+// ...
+
+@Entity(name="users")
+public class User implements Serializable {
+
+    // ...
+
+}
+Then, create JPA-annotated fields for the username, password, and enabled database columns. Also, give the entity a primary key:
+
+import javax.persistence.Column;
+import javax.persistence.Id;
+import java.util.UUID;
+
+// ...
+
+@Entity(name="users")
+public class User implements Serializable {
+    @Id
+    UUID id;
+
+    @Column
+    String username;
+
+    @Column
+    String password;
+
+    @Column
+    boolean enabled = true;
+
+    // ... getters and setters
+}
+Finally, add two constructors, the default one that JPA expects, and a convenience constructor that takes a username and a password:
+
+User() {}
+
+public User(String username, String password) {
+    this.id = UUID.randomUUID();
+    this.username = username;
+    this.password = password;
+}
+Extra Credit
+Using the same table name and column names that Spring Security expects by default will make Spring Security's configuration simpler. Of course, in applications where the table and column names are different, Spring Security can be configured accordingly.
+
+4
+Add a Spring Data User Repository
+
+In this task, you'll add the Spring Data interface necessary to manage User entities.
+
+First, open the UserRepository class.
+
+Then, change it to implement CrudRepository<User, UUID> and add the @Repository annotation, like so:
+
+import java.util.UUID;
+import org.springframework.data.repository.CrudRepository;
+import org.springframework.stereotype.Repository;
+
+@Repository
+public interface UserRepository extends CrudRepository<User, UUID> {
+}
+5
+Add User to Database
+
+In this task, you'll add a user to the database that will replace the one you inlined in the code.
+
+First, open up the ResolutionInitializer class; this class is what we'll use to add test data throughout the project.
+
+Then, add a dependency on UserRepository:
+
+public class ResolutionInitializer implements SmartInitializingSingleton {
+    
+     // ...
+    private final UserRepository users;
+
+     // ...
+}
+replacing the existing constructor with a new one that requires both ResolutionRepository and UserRepository:
+
+  public ResolutionInitializer(ResolutionRepository resolutions, UserRepository users) {
+    this.resolutions = resolutions;
+    this.users = users;
+}
+Finally, at the end of the afterSingletonsInstantiated() method, create a user:
+
+@Override
+public void afterSingletonsInstantiated() {
+    // ...
+
+    User user = new User("user",
+            "{bcrypt}$2a$10$MywQEqdZFNIYnx.Ro/VQ0ulanQAl34B5xVjK2I/SDZNVGS5tHQ08W");
+    this.users.save(user);
+}
+6
+Replace the In-memory Datasource with a JDBC Datasource
+
+Now, we're ready to replace our in-memory user store with a JDBC-based one, JdbcUserDetailsManager.
+
+First, back in ResolutionsApplication, change your UserDetailsService @Bean to depend on a javax.sql.Datasource:
+
+import javax.sql.DataSource;
+
+// ...
+
+@Bean
+UserDetailsService userDetailsService(DataSource dataSource) {
+    // ...
+}
+Then, replace the use of InMemoryUserDetailsManager with an instance of JdbcUserDetailsManager:
+
+import java.util.List;
+
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.AuthorityUtils;
+import org.springframework.security.provisioning.JdbcUserDetailsManager;
+
+// ...
+
+@Bean
+UserDetailsService userDetailsService(DataSource dataSource) {
+    return new JdbcUserDetailsManager(dataSource) {
+        @Override
+        protected List<GrantedAuthority> loadUserAuthorities(String username) {
+            return AuthorityUtils.createAuthorityList("resolution:read");
+        }
+    };
+}
+Run Now's a good time to run things locally and see the REST API in action
+
+Extra Credit
+We haven't taken any steps yet to represent authority. Thus, the above declaration hardcodes the resolution:read authority into every user. We'll fill this in with real data very shortly.
+
+7
+Represent User Authorities with JPA
+
+In this task, you'll create a JPA-managed UserAuthority entity, which will be the beginnings of adding authorization to the project.
+
+First, open the UserAuthority stub.
+
+Then, add an @Entity annotation that configures the table name to be authorities, since that's the Spring Security default:
+
+import javax.persistence.Entity;
+
+// ...
+
+@Entity(name="authorities")
+public class UserAuthority {
+
+    // ...
+
+}
+Next, create the JPA-annotated field authority, which is a database column. Also, give the entity a primary key:
+
+import javax.persistence.Column;
+import javax.persistence.Id;
+import java.util.UUID;
+
+// ...
+
+@Entity(name="authorities")
+public class UserAuthority {
+    @Id
+    UUID id;
+
+    @Column
+    String authority;
+
+    // ... getters and setters
+}
+You're going to need a join column between Users and UserAuthoritys. Spring Security expects this column to be called username.
+
+So, next, add a @JoinColumn on a field of type User:
+
+import javax.persistence.JoinColumn;
+import javax.persistence.ManyToOne;
+
+// ...
+
+@Entity(name="authorities")
+public class UserAuthority {
+    @Id
+    UUID id;
+
+    @Column
+    String authority;
+
+    @JoinColumn(name="username", referencedColumnName="username")
+    @ManyToOne
+    User user;
+
+    // ... getters and setters
+}
+Add two constructors, first the default one that JPA expects, and then a convenience one that takes a user and an authority:
+
+UserAuthority() {}
+
+public UserAuthority(User user, String authority) {
+    this.id = UUID.randomUUID();
+    this.user = user;
+    this.authority = authority;
+}
+JPA expects you to manage the bi-directional relationship between User and UserAuthority, so, lastly, add a Set<UserAuthority> field as well as a grantAuthority method to User, like so:
+
+import java.util.Collection;
+import java.util.Collections;
+import java.util.ArrayList;
+import javax.persistence.CascadeType;
+import javax.persistence.FetchType;
+import javax.persistence.OneToMany;
+
+// ...
+
+@Entity(name="users")
+public class User implements Serializable {
+    // ...
+
+    @OneToMany(fetch=FetchType.EAGER, cascade=CascadeType.ALL)
+    Collection<UserAuthority> userAuthorities = new ArrayList<>();
+
+    // ...
+
+    public Collection<UserAuthority> getUserAuthorities() {
+        return Collections.unmodifiableCollection(this.userAuthorities);
+    }
+
+    public void grantAuthority(String authority) {
+        UserAuthority userAuthority = new UserAuthority(this, authority);
+        this.userAuthorities.add(userAuthority);
+    }
+}
+In the next step, you'll use this new entity to add a few more users to the database.
+
+8
+Add User Authorities to Database
+
+In this task, you'll add a couple more users and grant all users different authorities.
+
+First, back in ResolutionInitializer, update your user definition to also have a resolution:read authority and a resolution:write authority:
+
+User user = new User(...);
+user.grantAuthority("resolution:read");
+user.grantAuthority("resolution:write");
+this.users.save(user);
+Then, add two more users, one called hasread and the other called haswrite. Give hasread the resolution:read authority and haswrite the resolution:write authority. Also, set their passwords to be password:
+
+User hasread = new User();
+hasread.setUsername("hasread");
+hasread.setPassword("{bcrypt}$2a$10$MywQEqdZFNIYnx.Ro/VQ0ulanQAl34B5xVjK2I/SDZNVGS5tHQ08W");
+hasread.grantAuthority("resolution:read");
+this.users.save(hasread);
+
+User haswrite = new User();
+haswrite.setUsername("haswrite");
+haswrite.setPassword("{bcrypt}$2a$10$MywQEqdZFNIYnx.Ro/VQ0ulanQAl34B5xVjK2I/SDZNVGS5tHQ08W");
+haswrite.grantAuthority("resolution:write");
+this.users.save(haswrite);
+Finally, now that your users actually have authorities, you should remove the hard-coded resolution:read permission from your JdbcUserDetailsManager definition in ResolutionsApplication. Remember that it currently looks like this:
+
+@Bean
+UserDetailsService userDetailsService(DataSource dataSource) {
+    return new JdbcUserDetailsManager(dataSource) {
+        protected void loadUserAuthorities(String username) {
+            return AuthorityUtils.createAuthorityList("resolution:read");
+        }
+    }
+}
+Now, remove the custom implementation of loadUserAuthorities so that it looks like this:
+
+@Bean
+UserDetailsService userDetailsService(DataSource dataSource) {
+    return new JdbcUserDetailsManager(dataSource);
+}
+9
+Specify Authorization Rules in a WebSecurityConfigurerAdapter
+
+In this task, you'll add authorization rules via the Spring Security DSL.
+
+First, change ResolutionsApplication to extend WebSecurityConfigurerAdapter:
+
+@SpringBootApplication
+public class ResolutionsApplication extends WebSecurityConfigurerAdapter {
+    // ...
+}
+Then, override the configure(HttpSecurity http) method to:
+
+Specify that /resolutions and GET /resolution/** require the resolution:read permission.
+Specify that all other endpoints require the resolution:write permission.
+And set HTTP Basic as the only authentication mechanism allowed.
+import static org.springframework.http.HttpMethod.GET;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.WebSecurityConfigurerAdapter;
+
+// ...
+public class ResolutionsApplication extends WebSecurityConfigurerAdapter {
+
+    @Override
+    protected void configure(HttpSecurity http) throws Exception {
+        http
+            .authorizeRequests(authz -> authz
+                .mvcMatchers(GET, "/resolutions", "/resolution/**").hasAuthority("resolution:read")
+                .anyRequest().hasAuthority("resolution:write"))
+            .httpBasic(basic -> {});
+    }
+}
+Extra Credit
+One big difference that you'll notice at this point is that the application is no longer allowing a login page. If you navigate to http://localhost:8080/resolutions, you'll instead see a modal dialogue, which is how browsers respond to requests for HTTP Basic authentication.
+
+You should also notice that if haswrite tries to use the /resolutions endpoint, they'll get a 403:
+
+curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/resolutions
+403
+But, if hasread tries the same, it'll succeed:
+
+curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/resolutions
+200
+10
+Add a Copy Constructor to User
+
+For this task, add a copy constructor to User, in preparation for building a custom UserDetailsService.
+
+public User(User user) {
+    this.id = user.id;
+    this.username = user.username;
+    this.password = user.password;
+    this.enabled = user.enabled;
+    this.userAuthorities = user.userAuthorities;
+}
+Extra Credit
+While not strictly necessary, you can also add a copy constructor to UserAuthority. This will allow you to make a deep copy of user.userAuthorities in User's copy constructor.
+
+11
+Create an Always-broken UserDetailsService
+
+Because a UserDetailsService should throw a UsernameNotFoundException if it can't find the user, the simplest UserDetailsService is one that does only that.
+
+First, open UserRepositoryUserDetailsService and change it to implement UserDetailsService:
+
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UserDetailsService;
+
+public class UserRepositoryUserDetailsService implements UserDetailsService {
+  // ...
+}
+Then, implement the loadUserByUsername() method to always throw a UsernameNotFoundException:
+
+import org.springframework.security.core.userdetails.UserNotFoundException;
+
+public class UserRepositoryUserDetailsService implements UserDetailsService {
+    @Override
+    public UserDetails loadUserByUsername(String username) {
+        throw new UsernameNotFoundException("no user");
+    }
+}
+12
+Add UserRepository to UserRepositoryUserDetailsService
+
+In this task, you'll change your UserDetailsService to depend on your Spring Data UserRepository.
+
+To do this, add UserRepository as a dependency to UserRepositoryUserDetailsService by adding it to the constructor:
+
+public class UserRepositoryUserDetailsService implements UserDetailsService {
+    private final UserRepository users;
+
+    public UserRepositoryUserDetailsService(UserRepository users) {
+        this.users = users;
+    }
+
+    // ...
+}
+13
+Convert User Entity into a UserDetails
+
+In this task, you'll convert your User entity into a UserDetails, in order to satisfy the UserDetailsService contract.
+
+To perform this conversion, first, add a private inner class to UserRepositoryUserDetailsService that extends User and implements UserDetails.
+
+import java.util.stream.Collectors;
+import java.util.List;
+
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.userdetails.UserDetails;
+
+// ...
+
+public class UserRepositoryUserDetailsService implements UserDetailService {
+    // ...
+
+    private static class BridgeUser extends User implements UserDetails {
+        public BridgeUser(User user) {
+            super(user);
+        }
+
+        public List<GrantedAuthority> getAuthorities() {
+            return this.userAuthorities.stream()
+                .map(UserAuthority::getAuthority)
+                .map(SimpleGrantedAuthority::new)
+                .collect(Collectors.toList());
+        }
+
+        public boolean isAccountNonExpired() {
+            return this.enabled;
+        }
+
+        public boolean isAccountNonLocked() {
+            return this.enabled;
+        }
+
+        public boolean isCredentialsNonExpired() {
+            return this.enabled;
+        }
+    }
+}
+Then, add a method called findByUsername to UserRepository:
+
+@Repository
+public interface UserRepository implements CrudRepository<User, UUID> {
+    Optional<User> findByUsername(String username);
+}
+Now, update the loadUserByUsername method in UserRepositoryUserDetailsService to call findByUsername and then convert the result into a BridgedUser:
+
+@Override
+public UserDetails loadUserByUsername(String username) {
+    return this.users.findByUsername(username)
+        .map(BridgedUser::new)
+        .orElseThrow(() -> new UsernameNotFoundException("invalid user"));
+}
+And finally, now that we've got a working custom UserDetailsService, back in ResolutionsApplication, update the UserDetailsService @Bean definition to now use UserRepositoryUserDetailsService instead of JdbcUserDetailsManager:
+
+@Bean
+UserDetailsService userDetailsService(UserRepository users) {
+    return new UserRepositoryUserDetailsService(users);
+}
+Note that the method now depends on UserRepository instead of DataSource.
+
+Run Now's a good time to run things locally and see the REST API in action
+
+Extra Credit
+Certainly, we could have changed User to implement UserDetails. While this is tempting, it's no fewer lines of code in addition to having the negative tradeoff of directly tying your domain objects to Spring Security. The reason the demonstrated way is preferred is that it hides the relationship between your domain and Spring Security behind Spring Security interfaces.
+
+14
+Retrieve Custom User Information in Controllers
+
+Right now, the username is hard-coded for the owner of any resolution that gets created via the API:
+
+@PostMapping("/resolution")
+public Resolution make(@RequestBody String text) {
+    String owner = "user";
+    Resolution resolution = new Resolution(text, owner);
+    return this.resolutions.save(resolution);
+}
+Now with our custom UserDetailsService in place, we can access domain-specific information in our controller method parameters.
+
+For this last task, first, open up the CurrentUsername annotation.
+
+Then, add the expression @CurrentSecurityContext(expression="authentication.name"):
+
+import org.springframework.security.core.annotation.CurrentSecurityContext;
+
+@Retention(RetentionPolicy.RUNTIME)
+@Target(ElementType.PARAMETER)
+@CurrentSecurityContext(expression="authentication.name")
+public @interface CurrentUsername {
+}
+Following that, go into ResolutionController and update the make method to include the current username as a method parameter:
+
+@PostMapping("/resolution")
+public Resolution make(@CurrentUsername String owner, @RequestBody String text) {
+    Resolution resolution = new Resolution(text, owner);
+    return this.resolutions.save(resolution);
+}
+This will cause Spring to look up the username of the currently logged in user, and use it when calling the ResolutionController#make method.
+
+Run Now's a good time to run things locally and see the REST API in action
+
+Extra Credit
+In this task, you've used the most advanced version of @CurrentSecurityContext; however, there are simpler incarnations. For example, you can inline @CurrentSecurityContext in the method itself, and without an expression:
+
+@PostMapping("/resolution")
+public Resolution make(@CurrentSecurityContext SecurityContext ctx, @RequestBody String text) {
+    User user = (User) ctx.getAuthentication().getPrincipal(); 
+    // ...
+}
+Or, you can provide an expression in the inlined annotation:
+
+@PostMapping("/resolution")
+public Resolution make(@CurrentSecurityContext(expression="authentication.name") String owner, @RequestBody String text) {
+    Resolution resolution = new Resolution(text, owner);
+    return this.resolutions.save(resolution);
+}
